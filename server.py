@@ -1,109 +1,99 @@
 # server.py
-from fastapi import FastAPI, HTTPException
-from pydantic import BaseModel
+from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
+import asyncio
 import joblib
 import numpy as np
-import uvicorn
-import os
-import threading
-import time
-
-# Binance client
+from tensorflow.keras.models import load_model
 from binance.client import Client
+from datetime import datetime
 
-# --- Load trained model and scaler ---
+# ---------------- CONFIG ----------------
+BINANCE_SYMBOL = "BTCUSDT"
+BINANCE_INTERVAL = "5m"  # 5-minute candles
+FETCH_INTERVAL_SECONDS = 300  # 5 minutes
+MODEL_PATH = "crypto_lstm_model.keras"
+SCALER_PATH = "scaler.pkl"
+
+# Binance client (no API keys needed for public data)
+client = Client()
+
+# ---------------- LOAD MODEL ----------------
 try:
-    model = joblib.load("lstm_model.pkl")  # make sure this exists
-    scaler = joblib.load("scaler.pkl")     # your StandardScaler
+    model = load_model(MODEL_PATH)
 except Exception as e:
-    print(f"Error loading model/scaler: {e}")
+    print(f"Error loading model: {e}")
     model = None
+
+try:
+    scaler = joblib.load(SCALER_PATH)
+except Exception as e:
+    print(f"Error loading scaler: {e}")
     scaler = None
 
-# --- Binance API setup ---
-BINANCE_API_KEY = os.getenv("BINANCE_API_KEY", "")
-BINANCE_API_SECRET = os.getenv("BINANCE_API_SECRET", "")
-binance_client = Client(BINANCE_API_KEY, BINANCE_API_SECRET)
+# ---------------- APP SETUP ----------------
+app = FastAPI(title="Miyamotoan Analyst Auto-Fetcher")
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
-# --- FastAPI setup ---
-app = FastAPI(title="Miyamotoan Analyst")
+# Store latest prediction
+latest_signal = {"timestamp": None, "signal": None, "prediction": None}
 
-# --- Request schema ---
-class CandleData(BaseModel):
-    data: list  # list of [open, high, low, close, volume]
+# ---------------- BINANCE FETCH & PREDICT ----------------
+async def fetch_and_predict():
+    global latest_signal
+    while True:
+        try:
+            # Fetch recent candles
+            candles = client.get_klines(
+                symbol=BINANCE_SYMBOL,
+                interval=BINANCE_INTERVAL,
+                limit=50  # last 50 candles
+            )
 
-# --- Root endpoint ---
+            closes = [float(c[4]) for c in candles]  # close prices
+            X = np.array(closes).reshape(-1, 1, 1)  # reshape for LSTM
+
+            # scale if scaler exists
+            if scaler:
+                X = scaler.transform(X)
+
+            # predict
+            if model:
+                pred = model.predict(X)
+                signal = "BUY" if pred[-1][0] > 0.5 else "SELL"
+                latest_signal = {
+                    "timestamp": datetime.utcnow().isoformat(),
+                    "signal": signal,
+                    "prediction": float(pred[-1][0])
+                }
+                print(f"[{latest_signal['timestamp']}] Signal: {signal}")
+        except Exception as e:
+            print(f"Error during fetch/predict: {e}")
+
+        await asyncio.sleep(FETCH_INTERVAL_SECONDS)
+
+# ---------------- ENDPOINTS ----------------
 @app.get("/")
 def root():
     return {"status": "Miyamotoan Analyst server is live!"}
 
-# --- Local predict endpoint (send your own candles) ---
-@app.post("/predict-live")
-async def predict_live(candle_request: CandleData):
-    if not model or not scaler:
-        raise HTTPException(status_code=500, detail="Model not loaded.")
+@app.get("/latest-signal")
+def get_latest_signal():
+    if latest_signal["signal"] is None:
+        return {"detail": "No signal yet. Wait for first fetch."}
+    return latest_signal
 
-    data = candle_request.data
-    if len(data) == 0:
-        raise HTTPException(status_code=400, detail="Empty data provided.")
+# ---------------- START BACKGROUND TASK ----------------
+@app.on_event("startup")
+async def startup_event():
+    asyncio.create_task(fetch_and_predict())
 
-    try:
-        closes = [float(c[3]) for c in data]  # close prices only
-        X = np.array(closes).reshape(-1, 1, 1)  # reshape for LSTM
-        if scaler:
-            X = scaler.transform(X)
-        pred = model.predict(X)
-        signal = ["BUY" if p > 0.5 else "SELL" for p in pred.flatten()]
-        return {"prediction": pred.flatten().tolist(), "signal": signal}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Prediction error: {e}")
-
-# --- Helper: fetch Binance 5m candles ---
-def fetch_binance_5m(symbol="BTCUSDT", limit=50):
-    klines = binance_client.get_klines(
-        symbol=symbol,
-        interval=Client.KLINE_INTERVAL_5MINUTE,
-        limit=limit
-    )
-    data = []
-    for k in klines:
-        data.append([float(k[1]), float(k[2]), float(k[3]), float(k[4]), float(k[5])])
-    return data
-
-# --- Predict from Binance 5m candles ---
-@app.get("/predict-binance")
-def predict_binance(symbol: str = "BTCUSDT"):
-    if not model or not scaler:
-        raise HTTPException(status_code=500, detail="Model not loaded.")
-    try:
-        data = fetch_binance_5m(symbol)
-        closes = [c[3] for c in data]
-        X = np.array(closes).reshape(-1, 1, 1)
-        if scaler:
-            X = scaler.transform(X)
-        pred = model.predict(X)
-        signal = ["BUY" if p > 0.5 else "SELL" for p in pred.flatten()]
-        return {"symbol": symbol, "prediction": pred.flatten().tolist(), "signal": signal}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Prediction error: {e}")
-
-# --- Optional: auto-predict every 5 minutes ---
-def schedule_predictions():
-    while True:
-        try:
-            data = fetch_binance_5m("BTCUSDT")
-            closes = [c[3] for c in data]
-            X = np.array(closes).reshape(-1, 1, 1)
-            if scaler:
-                X = scaler.transform(X)
-            pred = model.predict(X)
-            print(f"Auto-prediction BTCUSDT: {pred.flatten()}")
-        except Exception as e:
-            print(f"Auto-prediction error: {e}")
-        time.sleep(300)  # wait 5 minutes
-
-threading.Thread(target=schedule_predictions, daemon=True).start()
-
-# --- Run server ---
+# ---------------- RUN ----------------
 if __name__ == "__main__":
+    import uvicorn
     uvicorn.run("server:app", host="0.0.0.0", port=10000, reload=True)
