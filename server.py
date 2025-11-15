@@ -1,55 +1,66 @@
-
-from fastapi import FastAPI
+# server.py
+from fastapi import FastAPI, HTTPException
+from pydantic import BaseModel
 import joblib
-import tensorflow as tf
 import numpy as np
+import uvicorn
 
-app = FastAPI()
+# --- Load trained models and scalers ---
+try:
+    model = joblib.load("lstm_model.pkl")  # your trained LSTM
+    scaler = joblib.load("scaler.pkl")     # StandardScaler or similar
+except Exception as e:
+    print(f"Error loading model/scaler: {e}")
+    model = None
+    scaler = None
 
-# Load model and scaler
-model = tf.keras.models.load_model("crypto_lstm_model.keras")
-scaler = joblib.load("scaler.pkl")
+app = FastAPI(title="Miyamotoan Analyst")
+
+# --- Request schema ---
+class CandleData(BaseModel):
+    data: list  # list of [open, high, low, close, volume]
 
 @app.get("/")
 def root():
-    return {"message": "Server is live!"}
+    return {"status": "Miyamotoan Analyst server is live!"}
 
-@app.get("/predict")
-def predict(open: float, high: float, low: float, close: float, volume: float):
-    # Convert input into numpy array
-    X = np.array([[open, high, low, close, volume]])
-    X_scaled = scaler.transform(X)
-    prob = model.predict(X_scaled)
-    signal = "BUY" if prob >= 0.5 else "SELL"
-    return {"probability": float(prob[0][0]), "signal": signal}
+@app.post("/predict-live")
+async def predict_live(candle_request: CandleData):
+    if not model or not scaler:
+        raise HTTPException(status_code=500, detail="Model not loaded.")
 
-import requests
-import numpy as np
+    data = candle_request.data
 
-@app.get("/predict-live")
-def predict_live():
-    # 1. Get 200 candles from Binance (5m)
-    url = "https://api.binance.com/api/v3/klines?symbol=BTCUSDT&interval=5m&limit=200"
-    data = requests.get(url).json()
+    # Basic validation
+    if len(data) == 0:
+        raise HTTPException(status_code=400, detail="Empty data provided.")
+    
+    try:
+        # Extract closes (or whatever features your model needs)
+        closes = [float(c[3]) for c in data]  # 0=open, 1=high, 2=low, 3=close, 4=volume
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Data format error: {e}")
 
-    closes = [float(k[4]) for k in data]  # close prices only
+    # Convert to numpy array and reshape for LSTM [samples, timesteps, features]
+    X = np.array(closes).reshape(-1, 1, 1)
+    
+    # Apply scaling if you used a scaler
+    if scaler:
+        try:
+            X = scaler.transform(X)
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"Scaler error: {e}")
 
-    # 2. Scale using your saved scaler
-    scaled = scaler.transform(np.array(closes).reshape(-1, 1)).reshape(-1)
+    # Make prediction
+    try:
+        pred = model.predict(X)
+        # Example: assume sigmoid output -> buy if >0.5
+        signal = ["BUY" if p > 0.5 else "SELL" for p in pred.flatten()]
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Prediction error: {e}")
 
-    # 3. Create the sequence for the model (last 60 closes)
-    seq = np.array(scaled[-60:]).reshape(1, 60, 1)
+    return {"prediction": pred.flatten().tolist(), "signal": signal}
 
-    # 4. Predict
-    pred = model.predict(seq)[0][0]
 
-    # 5. Inverse scale prediction
-    pred_price = scaler.inverse_transform([[pred]])[0][0]
-    last_price = closes[-1]
-    direction = "UP" if pred_price > last_price else "DOWN"
-
-    return {
-        "current_price": last_price,
-        "predicted_price": pred_price,
-        "direction": direction
-    }
+if __name__ == "__main__":
+    uvicorn.run("server:app", host="0.0.0.0", port=10000, reload=True)
