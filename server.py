@@ -43,7 +43,7 @@ async def predict_live(candle_request: CandleData):
         raise HTTPException(status_code=400, detail=f"Data format error: {e}")
 
     # Convert to numpy array and reshape for LSTM [samples, timesteps, features]
-    X = np.array(closes).reshape(-1, 1, 1)
+    X = np.array(closes).reshape(-1, 1)
     
     # Apply scaling if you used a scaler
     if scaler:
@@ -52,6 +52,7 @@ async def predict_live(candle_request: CandleData):
         except Exception as e:
             raise HTTPException(status_code=500, detail=f"Scaler error: {e}")
 
+    X = X.reshape(-1, 1, 1)
     # Make prediction
     try:
         pred = model.predict(X)
