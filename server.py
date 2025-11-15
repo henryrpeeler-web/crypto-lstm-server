@@ -1,4 +1,5 @@
 # server.py
+from tensorflow.keras.models import load_model
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 import joblib
@@ -7,7 +8,7 @@ import uvicorn
 
 # --- Load trained models and scalers ---
 try:
-    model = joblib.load("lstm_model.pkl")  # your trained LSTM
+    model = load_model("crypto_lstm_model.keras")  # your trained LSTM
     scaler = joblib.load("scaler.pkl")     # StandardScaler or similar
 except Exception as e:
     print(f"Error loading model/scaler: {e}")
