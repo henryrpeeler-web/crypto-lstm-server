@@ -1,68 +1,60 @@
-# server.py
-from tensorflow.keras.models import load_model
 from fastapi import FastAPI, HTTPException
-from pydantic import BaseModel
 import joblib
 import numpy as np
+from binance.client import Client
+import os
 import uvicorn
 
-# --- Load trained models and scalers ---
+# --- Load model & scaler ---
 try:
-    model = load_model("crypto_lstm_model.keras")  # your trained LSTM
-    scaler = joblib.load("scaler.pkl")     # StandardScaler or similar
+    model = joblib.load("lstm_model.pkl")   # your trained LSTM
+    scaler = joblib.load("scaler.pkl")      # your StandardScaler
 except Exception as e:
     print(f"Error loading model/scaler: {e}")
     model = None
     scaler = None
 
-app = FastAPI(title="Miyamotoan Analyst")
+# --- Binance setup ---
+BINANCE_API_KEY = os.getenv("BINANCE_API_KEY", "")
+BINANCE_API_SECRET = os.getenv("BINANCE_API_SECRET", "")
+client = Client(BINANCE_API_KEY, BINANCE_API_SECRET)
 
-# --- Request schema ---
-class CandleData(BaseModel):
-    data: list  # list of [open, high, low, close, volume]
+app = FastAPI(title="Miyamotoan Analyst")
 
 @app.get("/")
 def root():
-    return {"status": "Miyamotoan Analyst server is live!"}
+    return {"status": "Server is live!"}
 
-@app.post("/predict-live")
-async def predict_live(candle_request: CandleData):
+@app.get("/predict-live")
+def predict_live(symbol: str = "BTCUSDT", interval: str = "5m", limit: int = 50):
     if not model or not scaler:
         raise HTTPException(status_code=500, detail="Model not loaded.")
 
-    data = candle_request.data
-
-    # Basic validation
-    if len(data) == 0:
-        raise HTTPException(status_code=400, detail="Empty data provided.")
-    
     try:
-        # Extract closes (or whatever features your model needs)
-        closes = [float(c[3]) for c in data]  # 0=open, 1=high, 2=low, 3=close, 4=volume
+        # Fetch last 'limit' candles from Binance
+        klines = client.get_klines(symbol=symbol, interval=interval, limit=limit)
+        closes = [float(k[4]) for k in klines]  # index 4 = close price
     except Exception as e:
-        raise HTTPException(status_code=400, detail=f"Data format error: {e}")
+        raise HTTPException(status_code=500, detail=f"Binance API fetch failed: {e}")
 
-    # Convert to numpy array and reshape for LSTM [samples, timesteps, features]
-    X = np.array(closes).reshape(-1, 1)
-    
-    # Apply scaling if you used a scaler
-    if scaler:
-        try:
+    # Reshape for LSTM
+    X = np.array(closes).reshape(-1, 1, 1)  # [samples, timesteps, features]
+
+    # Apply scaler
+    try:
+        if scaler:
             X = scaler.transform(X)
-        except Exception as e:
-            raise HTTPException(status_code=500, detail=f"Scaler error: {e}")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Scaler error: {e}")
 
-    X = X.reshape(-1, 1, 1)
     # Make prediction
     try:
         pred = model.predict(X)
-        # Example: assume sigmoid output -> buy if >0.5
         signal = ["BUY" if p > 0.5 else "SELL" for p in pred.flatten()]
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Prediction error: {e}")
 
     return {"prediction": pred.flatten().tolist(), "signal": signal}
-
 
 if __name__ == "__main__":
     uvicorn.run("server:app", host="0.0.0.0", port=10000, reload=True)
