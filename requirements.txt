@@ -1,6 +1,7 @@
 fastapi==0.108.0
 uvicorn==0.23.2
 tensorflow>=2.20.0
+python-binance
 numpy>=1.26
 joblib
 scikit-learn==1.5.2
