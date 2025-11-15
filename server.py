@@ -1,99 +1,78 @@
-# server.py
-from fastapi import FastAPI
-from fastapi.middleware.cors import CORSMiddleware
-import asyncio
+from fastapi import FastAPI, HTTPException
 import joblib
 import numpy as np
+import tensorflow as tf
 from tensorflow.keras.models import load_model
-from binance.client import Client
-from datetime import datetime
+import requests
+import asyncio
 
-# ---------------- CONFIG ----------------
-BINANCE_SYMBOL = "BTCUSDT"
-BINANCE_INTERVAL = "5m"  # 5-minute candles
-FETCH_INTERVAL_SECONDS = 300  # 5 minutes
-MODEL_PATH = "crypto_lstm_model.keras"
-SCALER_PATH = "scaler.pkl"
-
-# Binance client (no API keys needed for public data)
-client = Client()
-
-# ---------------- LOAD MODEL ----------------
+# --- Load model and scaler ---
 try:
-    model = load_model(MODEL_PATH)
+    model = load_model("crypto_lstm_model.keras")  # your .keras model
+    scaler = joblib.load("scaler.pkl")
 except Exception as e:
-    print(f"Error loading model: {e}")
+    print(f"Error loading model or scaler: {e}")
     model = None
-
-try:
-    scaler = joblib.load(SCALER_PATH)
-except Exception as e:
-    print(f"Error loading scaler: {e}")
     scaler = None
 
-# ---------------- APP SETUP ----------------
-app = FastAPI(title="Miyamotoan Analyst Auto-Fetcher")
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+app = FastAPI(title="Miyamotoan Analyst")
 
-# Store latest prediction
-latest_signal = {"timestamp": None, "signal": None, "prediction": None}
+# --- Globals ---
+latest_prediction = None
+latest_signal = None
+PAIR = "BTC-USD"
+TIMEFRAME = 300  # 5m candles
 
-# ---------------- BINANCE FETCH & PREDICT ----------------
-async def fetch_and_predict():
-    global latest_signal
+# --- Fetch 5m OHLCV from Coinbase ---
+async def fetch_candles():
+    global latest_prediction, latest_signal
     while True:
         try:
-            # Fetch recent candles
-            candles = client.get_klines(
-                symbol=BINANCE_SYMBOL,
-                interval=BINANCE_INTERVAL,
-                limit=50  # last 50 candles
-            )
+            url = f"https://api.exchange.coinbase.com/products/{PAIR}/candles?granularity={TIMEFRAME}"
+            resp = requests.get(url, timeout=10)
+            resp.raise_for_status()
+            data = resp.json()  # [time, low, high, open, close, volume]
 
-            closes = [float(c[4]) for c in candles]  # close prices
-            X = np.array(closes).reshape(-1, 1, 1)  # reshape for LSTM
+            # Coinbase returns [time, low, high, open, close, volume], oldest first
+            data_sorted = sorted(data, key=lambda x: x[0])
+            closes = np.array([c[4] for c in data_sorted]).reshape(-1, 1)  # column vector
 
-            # scale if scaler exists
+            # Scale
             if scaler:
-                X = scaler.transform(X)
+                closes_scaled = scaler.transform(closes)
+            else:
+                closes_scaled = closes
 
-            # predict
-            if model:
-                pred = model.predict(X)
-                signal = "BUY" if pred[-1][0] > 0.5 else "SELL"
-                latest_signal = {
-                    "timestamp": datetime.utcnow().isoformat(),
-                    "signal": signal,
-                    "prediction": float(pred[-1][0])
-                }
-                print(f"[{latest_signal['timestamp']}] Signal: {signal}")
+            # Reshape for LSTM: [samples, timesteps, features]
+            X = closes_scaled.reshape(1, len(closes_scaled), 1)
+
+            # Predict
+            pred = model.predict(X)
+            latest_prediction = pred.flatten().tolist()
+            latest_signal = ["BUY" if p > 0.5 else "SELL" for p in pred.flatten()]
+
         except Exception as e:
-            print(f"Error during fetch/predict: {e}")
+            print(f"Error fetching or predicting: {e}")
 
-        await asyncio.sleep(FETCH_INTERVAL_SECONDS)
+        # Wait 5 minutes
+        await asyncio.sleep(TIMEFRAME)
 
-# ---------------- ENDPOINTS ----------------
+# --- Endpoints ---
 @app.get("/")
 def root():
     return {"status": "Miyamotoan Analyst server is live!"}
 
-@app.get("/latest-signal")
-def get_latest_signal():
-    if latest_signal["signal"] is None:
-        return {"detail": "No signal yet. Wait for first fetch."}
-    return latest_signal
+@app.get("/predict-live")
+def predict_live():
+    if latest_prediction is None or latest_signal is None:
+        raise HTTPException(status_code=500, detail="No prediction available yet.")
+    return {"prediction": latest_prediction, "signal": latest_signal}
 
-# ---------------- START BACKGROUND TASK ----------------
+# --- Startup task ---
 @app.on_event("startup")
 async def startup_event():
-    asyncio.create_task(fetch_and_predict())
+    asyncio.create_task(fetch_candles())
 
-# ---------------- RUN ----------------
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run("server:app", host="0.0.0.0", port=10000, reload=True)
