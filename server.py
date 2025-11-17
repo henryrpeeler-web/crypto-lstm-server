@@ -1,78 +1,82 @@
 from fastapi import FastAPI, HTTPException
 import joblib
-import numpy as np
 import tensorflow as tf
-from tensorflow.keras.models import load_model
+import numpy as np
 import requests
-import asyncio
 
-# --- Load model and scaler ---
+app = FastAPI()
+
+# ----------------------
+# Load model + scaler
+# ----------------------
 try:
-    model = load_model("crypto_lstm_model.keras")  # your .keras model
+    model = tf.keras.models.load_model("crypto_lstm_model.keras")
     scaler = joblib.load("scaler.pkl")
 except Exception as e:
-    print(f"Error loading model or scaler: {e}")
+    print("MODEL LOAD ERROR:", str(e))
     model = None
     scaler = None
 
-app = FastAPI(title="Miyamotoan Analyst")
 
-# --- Globals ---
-latest_prediction = None
-latest_signal = None
-PAIR = "BTC-USD"
-TIMEFRAME = 300  # 5m candles
-
-# --- Fetch 5m OHLCV from Coinbase ---
-async def fetch_candles():
-    global latest_prediction, latest_signal
-    while True:
-        try:
-            url = f"https://api.exchange.coinbase.com/products/{PAIR}/candles?granularity={TIMEFRAME}"
-            resp = requests.get(url, timeout=10)
-            resp.raise_for_status()
-            data = resp.json()  # [time, low, high, open, close, volume]
-
-            # Coinbase returns [time, low, high, open, close, volume], oldest first
-            data_sorted = sorted(data, key=lambda x: x[0])
-            closes = np.array([c[4] for c in data_sorted]).reshape(-1, 1)  # column vector
-
-            # Scale
-            if scaler:
-                closes_scaled = scaler.transform(closes)
-            else:
-                closes_scaled = closes
-
-            # Reshape for LSTM: [samples, timesteps, features]
-            X = closes_scaled.reshape(1, len(closes_scaled), 1)
-
-            # Predict
-            pred = model.predict(X)
-            latest_prediction = pred.flatten().tolist()
-            latest_signal = ["BUY" if p > 0.5 else "SELL" for p in pred.flatten()]
-
-        except Exception as e:
-            print(f"Error fetching or predicting: {e}")
-
-        # Wait 5 minutes
-        await asyncio.sleep(TIMEFRAME)
-
-# --- Endpoints ---
 @app.get("/")
 def root():
-    return {"status": "Miyamotoan Analyst server is live!"}
+    return {"message": "Server is live!"}
 
+
+# ----------------------
+# LIVE candle fetcher (Coinbase)
+# ----------------------
+def fetch_live_candle():
+    url = "https://api.exchange.coinbase.com/products/BTC-USD/candles?granularity=60"
+
+    try:
+        r = requests.get(url, timeout=3)
+        r.raise_for_status()
+        data = r.json()
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Coinbase API error: {e}")
+
+    if not data or len(data) == 0:
+        raise HTTPException(status_code=500, detail="No data returned from Coinbase")
+
+    # Coinbase returns: [time, low, high, open, close, volume]
+    c = data[0]
+    open_p = float(c[3])
+    high_p = float(c[2])
+    low_p = float(c[1])
+    close_p = float(c[4])
+    volume = float(c[5])
+
+    return [open_p, high_p, low_p, close_p, volume]
+
+
+# ----------------------
+# Predict-live endpoint
+# ----------------------
 @app.get("/predict-live")
 def predict_live():
-    if latest_prediction is None or latest_signal is None:
-        raise HTTPException(status_code=500, detail="No prediction available yet.")
-    return {"prediction": latest_prediction, "signal": latest_signal}
+    if model is None or scaler is None:
+        raise HTTPException(status_code=500, detail="Model or scaler not loaded.")
 
-# --- Startup task ---
-@app.on_event("startup")
-async def startup_event():
-    asyncio.create_task(fetch_candles())
+    # 1. Fetch live candle
+    candle = fetch_live_candle()
 
-if __name__ == "__main__":
-    import uvicorn
-    uvicorn.run("server:app", host="0.0.0.0", port=10000, reload=True)
+    # 2. Convert + scale
+    X = np.array([candle])
+    X_scaled = scaler.transform(X)
+
+    # 3. Predict
+    prob = model.predict(X_scaled)[0][0]
+    signal = "BUY" if prob >= 0.5 else "SELL"
+
+    return {
+        "candle": {
+            "open": candle[0],
+            "high": candle[1],
+            "low": candle[2],
+            "close": candle[3],
+            "volume": candle[4],
+        },
+        "probability": float(prob),
+        "signal": signal
+    }
