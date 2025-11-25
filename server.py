@@ -80,3 +80,39 @@ def predict_live():
         "probability": float(prob),
         "signal": signal
     }
+
+
+# ----------------------
+# Predict from user input
+# ----------------------
+@app.post("/predict")
+def predict_from_input(candle: dict):
+    if model is None or scaler is None:
+        raise HTTPException(status_code=500, detail="Model or scaler not loaded.")
+
+    try:
+        open_p = float(candle["open"])
+        high_p = float(candle["high"])
+        low_p = float(candle["low"])
+        close_p = float(candle["close"])
+        volume = float(candle["volume"])
+    except Exception:
+        raise HTTPException(
+            status_code=400,
+            detail="Invalid input. Required keys: open, high, low, close, volume"
+        )
+
+    # 1. Create input array
+    X = np.array([[open_p, high_p, low_p, close_p, volume]])
+
+    # 2. Scale it
+    X_scaled = scaler.transform(X)
+
+    # 3. Predict
+    prob = model.predict(X_scaled)[0][0]
+    signal = "BUY" if prob >= 0.5 else "SELL"
+
+    return {
+        "probability": float(prob),
+        "signal": signal
+    }
