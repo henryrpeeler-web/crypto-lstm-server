@@ -1,6 +1,6 @@
 fastapi==0.108.0
 uvicorn==0.23.2
-tensorflow-cpu==2.12.0
+tensorflow>=2.20.0
 requests
 numpy==1.26.4
 joblib
