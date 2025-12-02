@@ -58,28 +58,42 @@ def predict_live():
     if model is None or scaler is None:
         raise HTTPException(status_code=500, detail="Model or scaler not loaded.")
 
-    # 1. Fetch live candle
-    candle = fetch_live_candle()
+    # Step 1 — Fetch
+    try:
+        candle = fetch_live_candle()
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Live candle fetch failed: {e}"
+        )
 
-    # 2. Convert + scale
-    X = np.array([candle])
-    X_scaled = scaler.transform(X)
+    # Step 2 — Scale
+    try:
+        X = np.array([candle])
+        X_scaled = scaler.transform(X)
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Scaling failed: {e}"
+        )
 
-    # 3. Predict
-    prob = model.predict(X_scaled)[0][0]
+    # Step 3 — Predict
+    try:
+        prob = model.predict(X_scaled)[0][0]
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Model prediction failed: {e}"
+        )
+
     signal = "BUY" if prob >= 0.5 else "SELL"
 
     return {
-        "candle": {
-            "open": candle[0],
-            "high": candle[1],
-            "low": candle[2],
-            "close": candle[3],
-            "volume": candle[4],
-        },
+        "candle": candle,
         "probability": float(prob),
         "signal": signal
     }
+
 
 
 # ----------------------
