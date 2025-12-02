@@ -58,41 +58,56 @@ def predict_live():
     if model is None or scaler is None:
         raise HTTPException(status_code=500, detail="Model or scaler not loaded.")
 
-    # Step 1 — Fetch
+    # 1. Fetch the last 30 candles from Coinbase
+    url = "https://api.exchange.coinbase.com/products/BTC-USD/candles?granularity=300"  # 5-minute candles
     try:
-        candle = fetch_live_candle()
+        r = requests.get(url, timeout=5)
+        r.raise_for_status()
+        data = r.json()
     except Exception as e:
-        raise HTTPException(
-            status_code=500,
-            detail=f"Live candle fetch failed: {e}"
-        )
+        raise HTTPException(status_code=500, detail=f"Coinbase API error: {e}")
 
-    # Step 2 — Scale
-    try:
-        X = np.array([candle])
-        X_scaled = scaler.transform(X)
-    except Exception as e:
-        raise HTTPException(
-            status_code=500,
-            detail=f"Scaling failed: {e}"
-        )
+    if not data or len(data) < 30:
+        raise HTTPException(status_code=500, detail="Not enough candle data returned from Coinbase")
 
-    # Step 3 — Predict
-    try:
-        prob = model.predict(X_scaled)[0][0]
-    except Exception as e:
-        raise HTTPException(
-            status_code=500,
-            detail=f"Model prediction failed: {e}"
-        )
+    # Coinbase returns: [time, low, high, open, close, volume]
+    # Sort by time ascending to make a proper sequence
+    data_sorted = sorted(data, key=lambda x: x[0])
+    last_30 = data_sorted[-30:]
 
+    sequence = []
+    for c in last_30:
+        open_p = float(c[3])
+        high_p = float(c[2])
+        low_p = float(c[1])
+        close_p = float(c[4])
+        volume = float(c[5])
+        sequence.append([open_p, high_p, low_p, close_p, volume])
+
+    # 2. Scale each feature
+    sequence_scaled = scaler.transform(sequence)  # shape (30,5)
+
+    # 3. Add batch dimension for LSTM
+    sequence_scaled = sequence_scaled[np.newaxis, :, :]  # shape (1,30,5)
+
+    # 4. Predict
+    prob = model.predict(sequence_scaled)[0][0]
     signal = "BUY" if prob >= 0.5 else "SELL"
 
+    # Return last candle info + prediction
+    last_candle = last_30[-1]
     return {
-        "candle": candle,
+        "candle": {
+            "open": float(last_candle[3]),
+            "high": float(last_candle[2]),
+            "low": float(last_candle[1]),
+            "close": float(last_candle[4]),
+            "volume": float(last_candle[5]),
+        },
         "probability": float(prob),
         "signal": signal
     }
+
 
 
 
