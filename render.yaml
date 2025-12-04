@@ -1,7 +1,7 @@
 services:
   - type: web
     name: crypto-lstm-server
-    env: python
+    env: PYTHON_VERSION: 3.11.9
     buildCommand: pip install -r requirements.txt
     startCommand: gunicorn server:app --timeout 120
 
@@ -9,6 +9,6 @@ jobs:
   - type: cron
     name: crypto-lstm-signal-job
     schedule: "*/5 * * * *"
-    env: python
+    env: PYTHON_VERSION: 3.11.9
     buildCommand: pip install -r requirements.txt
     startCommand: python signals.py
