@@ -4,7 +4,7 @@ import pickle
 import tensorflow as tf
 import pandas as pd
 
-MODEL_PATH = "crypto_lstm_model.keras"
+MODEL_PATH = "crypto_lstm_model_v2.keras"
 SCALER_PATH = "scaler.pkl"
 
 # Load model + scaler
