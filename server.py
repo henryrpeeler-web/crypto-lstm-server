@@ -13,7 +13,7 @@ app = FastAPI()
 # Load model + scaler
 # ----------------------
 try:
-    model = tf.keras.models.load_model("crypto_lstm_model.keras")
+    model = tf.keras.models.load_model("crypto_lstm_model_v2.keras")
     scaler = joblib.load("scaler.pkl")
 except Exception as e:
     print("MODEL LOAD ERROR:", str(e))
