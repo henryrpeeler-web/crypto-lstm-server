@@ -1,5 +1,6 @@
 fastapi
 uvicorn
+gunicorn
 tensorflow-cpu
 joblib
 requests
