@@ -17,62 +17,56 @@ except Exception as e:
     model = None
     scaler = None
 
-# ----------------------
-# Root endpoint
-# ----------------------
 @app.get("/")
 def root():
     return {"message": "Server is live!"}
 
 # ----------------------
-# Helper: fetch last 30 Binance candles
+# Fetch candles from Coinbase
 # ----------------------
-def fetch_binance_candles():
-    url = "https://api.binance.com/api/v3/klines?symbol=BTCUSDT&interval=5m&limit=30"
+def fetch_candles(n=30, granularity=300):
+    url = f"https://api.exchange.coinbase.com/products/BTC-USD/candles?granularity={granularity}"
     try:
         r = requests.get(url, timeout=5)
         r.raise_for_status()
         data = r.json()
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Binance API error: {e}")
+        raise HTTPException(status_code=500, detail=f"Coinbase API error: {e}")
 
-    if not data or len(data) < 30:
-        raise HTTPException(status_code=500, detail="Not enough candle data returned from Binance")
+    if not data or len(data) < n:
+        raise HTTPException(status_code=500, detail=f"Not enough candle data returned from Coinbase")
 
-    # Each candle: [open_time, open, high, low, close, volume, ...]
-    sequence = []
-    for c in data[-30:]:
-        open_p = float(c[1])
-        high_p = float(c[2])
-        low_p = float(c[3])
-        close_p = float(c[4])
-        volume = float(c[5])
-        sequence.append([open_p, high_p, low_p, close_p, volume])
-    return sequence
+    # Coinbase returns [time, low, high, open, close, volume], sort ascending by time
+    data_sorted = sorted(data, key=lambda x: x[0])
+    return data_sorted[-n:]
 
 # ----------------------
-# Predict live endpoint
+# Predict live
 # ----------------------
 @app.get("/predict-live")
 def predict_live():
     if model is None or scaler is None:
         raise HTTPException(status_code=500, detail="Model or scaler not loaded.")
 
-    sequence = fetch_binance_candles()
-    sequence_scaled = scaler.transform(sequence)
-    sequence_scaled = sequence_scaled[np.newaxis, :, :]  # shape (1,30,5)
+    last_30 = fetch_candles(n=30, granularity=300)
+    sequence = [[float(c[3]), float(c[2]), float(c[1]), float(c[4]), float(c[5])] for c in last_30]
 
+    # Scale
+    sequence_scaled = scaler.transform(sequence)
+    sequence_scaled = sequence_scaled[np.newaxis, :, :]  # Add batch dimension
+
+    # Predict
     prob = model.predict(sequence_scaled)[0][0]
     signal = "BUY" if prob >= 0.5 else "SELL"
 
-    last_candle = sequence[-1]
+    last_candle = last_30[-1]
     return {
         "candle": {
-            "open": last_candle[0],
-            "high": last_candle[1],
-            "low": last_candle[2],
-            "close": last_candle[3],
-            "volume": last_candle[4],
+            "open": float(last_candle[3]),
+            "high": float(last_candle[2]),
+            "low": float(last_candle[1]),
+            "close": float(last_candle[4]),
+            "volume": float(last_candle[5]),
         },
         "probability": float(prob),
         "signal": signal
@@ -87,23 +81,19 @@ def predict_from_input(candle: dict):
         raise HTTPException(status_code=500, detail="Model or scaler not loaded.")
 
     try:
-        open_p = float(candle["open"])
-        high_p = float(candle["high"])
-        low_p = float(candle["low"])
-        close_p = float(candle["close"])
-        volume = float(candle["volume"])
+        X = np.array([[float(candle["open"]),
+                       float(candle["high"]),
+                       float(candle["low"]),
+                       float(candle["close"]),
+                       float(candle["volume"])]])
     except Exception:
         raise HTTPException(
             status_code=400,
             detail="Invalid input. Required keys: open, high, low, close, volume"
         )
 
-    X = np.array([[open_p, high_p, low_p, close_p, volume]])
     X_scaled = scaler.transform(X)
     prob = model.predict(X_scaled)[0][0]
     signal = "BUY" if prob >= 0.5 else "SELL"
 
-    return {
-        "probability": float(prob),
-        "signal": signal
-    }
+    return {"probability": float(prob), "signal": signal}
