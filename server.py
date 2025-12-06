@@ -1,9 +1,8 @@
-from flask import Flask, request, jsonify
+from fastapi import FastAPI, HTTPException
 import tensorflow as tf
 import joblib
-
-from fastapi import FastAPI, HTTPException
 import requests
+import numpy as np   # <-- REQUIRED
 
 app = FastAPI()
 
