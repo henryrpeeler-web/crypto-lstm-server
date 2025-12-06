@@ -1,8 +1,6 @@
 fastapi
 uvicorn
 gunicorn
-tensorflow-cpu
-joblib
-requests
 numpy
-scikit-learn==1.3.2
+tensorflow
+scikit-learn    # REQUIRED because scaler.pkl was made with sklearn
