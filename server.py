@@ -59,29 +59,21 @@ def predict_live():
         raise HTTPException(status_code=500, detail="Model or scaler not loaded.")
 
     # 1. Fetch the last 30 candles from Coinbase
-    url = "https://api.exchange.coinbase.com/products/BTC-USD/candles?granularity=300"  # 5-minute candles
-    try:
-        r = requests.get(url, timeout=5)
-        r.raise_for_status()
-        data = r.json()
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Coinbase API error: {e}")
-
+    url = "https://api.binance.com/api/v3/klines?symbol=BTCUSDT&interval=5m&limit=30"
+    r = requests.get(url, timeout=5)
+    data = r.json()
+    
     if not data or len(data) < 30:
-        raise HTTPException(status_code=500, detail="Not enough candle data returned from Coinbase")
-
-    # Coinbase returns: [time, low, high, open, close, volume]
-    # Sort by time ascending to make a proper sequence
-    data_sorted = sorted(data, key=lambda x: x[0])
-    last_30 = data_sorted[-30:]
-
+        raise HTTPException(status_code=500, detail="Not enough candle data returned from Binance")
+    
     sequence = []
-    for c in last_30:
-        open_p = float(c[3])
-        high_p = float(c[2])
-        low_p = float(c[1])
+    for c in data:
+        open_p  = float(c[1])
+        high_p  = float(c[2])
+        low_p   = float(c[3])
         close_p = float(c[4])
-        volume = float(c[5])
+        volume  = float(c[5])
+    
         sequence.append([open_p, high_p, low_p, close_p, volume])
 
     # 2. Scale each feature
