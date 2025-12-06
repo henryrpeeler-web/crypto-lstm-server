@@ -3,23 +3,17 @@ import numpy as np
 import joblib
 import tensorflow as tf
 
-MODEL_PATH = "crypto_lstm_model_v2.keras"
+MODEL_PATH = "crypto_lstm_model_stateless.keras"
 SCALER_PATH = "scaler.pkl"
 
-# ----------------------
-# Load model + scaler
-# ----------------------
 try:
     model = tf.keras.models.load_model(MODEL_PATH)
     scaler = joblib.load(SCALER_PATH)
 except Exception as e:
-    print("MODEL LOAD ERROR:", str(e))
+    print("MODEL/SCALER LOAD ERROR:", e)
     model = None
     scaler = None
 
-# ----------------------
-# Fetch latest candle from Coinbase
-# ----------------------
 def get_latest_candle():
     url = "https://api.exchange.coinbase.com/products/BTC-USD/candles?granularity=300"
     try:
@@ -29,58 +23,47 @@ def get_latest_candle():
         return None
 
     if not data or len(data) == 0:
-        print("No candle data returned from Coinbase")
+        print("No candle data returned")
         return None
 
-    # Coinbase returns [time, low, high, open, close, volume]
-    latest = data[0]
+    c = data[0]
     return {
-        "open": float(latest[3]),
-        "high": float(latest[2]),
-        "low": float(latest[1]),
-        "close": float(latest[4]),
-        "volume": float(latest[5])
+        "open": float(c[3]),
+        "high": float(c[2]),
+        "low": float(c[1]),
+        "close": float(c[4]),
+        "volume": float(c[5])
     }
 
-# ----------------------
-# Preprocess a single candle
-# ----------------------
-def preprocess_candle(candle):
-    arr = np.array([[candle["open"],
-                     candle["high"],
-                     candle["low"],
-                     candle["close"],
-                     candle["volume"]]])
+def preprocess_candle(c):
+    arr = np.array([[c["open"], c["high"], c["low"], c["close"], c["volume"]]])
     scaled = scaler.transform(arr)
-    # Shape to (1, 30, 5) expected by LSTM
-    sequence = np.zeros((1, 30, 5))
-    sequence[0, -1, :] = scaled
-    return sequence
+    seq = np.zeros((1, 30, 5))
+    seq[0, -1, :] = scaled
+    return seq
 
-# ----------------------
-# Predict signal
-# ----------------------
 def predict_signal():
     if model is None or scaler is None:
-        print("Model or scaler not loaded.")
+        print("Model or scaler not loaded")
         return
 
     candle = get_latest_candle()
     if candle is None:
+        print("No candle for prediction")
         return
 
     X = preprocess_candle(candle)
     p = float(model.predict(X, verbose=0)[0][0])
     signal = "BUY" if p > 0.5 else "SELL"
 
-    payload = {
+    output = {
         "candle": candle,
         "probability": p,
-        "signal": signal,
+        "signal": signal
     }
 
-    print(payload)
-    return payload
+    print(output)
+    return output
 
 if __name__ == "__main__":
     predict_signal()
