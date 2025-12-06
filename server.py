@@ -21,6 +21,15 @@ except Exception as e:
     print("SCALER LOAD ERROR:", str(e))
     scaler = None
 
+# After loading model and scaler
+if model is not None:
+    try:
+        dummy = np.zeros((1,30,5), dtype=np.float32)
+        _ = model.predict(dummy, verbose=0)
+        print("Model pre-warmed for fast first inference")
+    except Exception as e:
+        print("Pre-warm failed:", e)
+
 @app.get("/")
 def root():
     return {"message": "Server is live!"}
@@ -31,7 +40,7 @@ def root():
 def fetch_last_30_candles():
     url = "https://api.exchange.coinbase.com/products/BTC-USD/candles?granularity=300"
     try:
-        r = requests.get(url, timeout=5)
+        r = requests.get(url, timeout=10)
         r.raise_for_status()
         data = r.json()
     except Exception as e:
