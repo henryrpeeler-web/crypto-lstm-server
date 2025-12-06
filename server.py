@@ -10,22 +10,29 @@ app = FastAPI()
 # Load model + scaler
 # ----------------------
 try:
-    model = tf.keras.models.load_model("crypto_lstm_model_stateless.keras")
-    scaler = joblib.load("scaler.pkl")
+    model = tf.keras.models.load_model("crypto_lstm_model_v2.keras")
 except Exception as e:
     print("MODEL LOAD ERROR:", str(e))
     model = None
+
+try:
+    scaler = joblib.load("scaler.pkl")
+except Exception as e:
+    print("SCALER LOAD ERROR:", str(e))
     scaler = None
 
+# ----------------------
+# Root endpoint
+# ----------------------
 @app.get("/")
 def root():
     return {"message": "Server is live!"}
 
 # ----------------------
-# Fetch candles from Coinbase
+# Fetch last 30 candles from Coinbase
 # ----------------------
-def fetch_candles(n=30, granularity=300):
-    url = f"https://api.exchange.coinbase.com/products/BTC-USD/candles?granularity={granularity}"
+def fetch_last_30_candles():
+    url = "https://api.exchange.coinbase.com/products/BTC-USD/candles?granularity=300"  # 5-min candles
     try:
         r = requests.get(url, timeout=5)
         r.raise_for_status()
@@ -33,31 +40,53 @@ def fetch_candles(n=30, granularity=300):
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Coinbase API error: {e}")
 
-    if not data or len(data) < n:
-        raise HTTPException(status_code=500, detail=f"Not enough candle data returned from Coinbase")
+    if not data or len(data) < 30:
+        raise HTTPException(status_code=500, detail="Not enough candle data returned from Coinbase")
 
-    # Coinbase returns [time, low, high, open, close, volume], sort ascending by time
+    # Sort by timestamp ascending
     data_sorted = sorted(data, key=lambda x: x[0])
-    return data_sorted[-n:]
+    return data_sorted[-30:]  # last 30 candles
 
 # ----------------------
-# Predict live
+# Predict live endpoint
 # ----------------------
 @app.get("/predict-live")
 def predict_live():
     if model is None or scaler is None:
         raise HTTPException(status_code=500, detail="Model or scaler not loaded.")
 
-    last_30 = fetch_candles(n=30, granularity=300)
-    sequence = [[float(c[3]), float(c[2]), float(c[1]), float(c[4]), float(c[5])] for c in last_30]
+    last_30 = fetch_last_30_candles()
 
-    # Scale
-    sequence_scaled = scaler.transform(sequence)
-    sequence_scaled = sequence_scaled[np.newaxis, :, :]  # Add batch dimension
+    # Build sequence
+    sequence = []
+    for c in last_30:
+        try:
+            sequence.append([
+                float(c[3]),  # open
+                float(c[2]),  # high
+                float(c[1]),  # low
+                float(c[4]),  # close
+                float(c[5])   # volume
+            ])
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"Error parsing candle: {e}")
+
+    if len(sequence) != 30 or len(sequence[0]) != 5:
+        raise HTTPException(status_code=500, detail=f"Invalid sequence shape: {np.array(sequence).shape}")
+
+    # Scale and reshape
+    try:
+        sequence_scaled = scaler.transform(sequence)  # (30,5)
+        sequence_scaled = sequence_scaled[np.newaxis, :, :]  # (1,30,5)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error scaling sequence: {e}")
 
     # Predict
-    prob = model.predict(sequence_scaled)[0][0]
-    signal = "BUY" if prob >= 0.5 else "SELL"
+    try:
+        prob = model.predict(sequence_scaled)[0][0]
+        signal = "BUY" if prob >= 0.5 else "SELL"
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error during prediction: {e}")
 
     last_candle = last_30[-1]
     return {
@@ -81,19 +110,18 @@ def predict_from_input(candle: dict):
         raise HTTPException(status_code=500, detail="Model or scaler not loaded.")
 
     try:
-        X = np.array([[float(candle["open"]),
-                       float(candle["high"]),
-                       float(candle["low"]),
-                       float(candle["close"]),
-                       float(candle["volume"])]])
-    except Exception:
-        raise HTTPException(
-            status_code=400,
-            detail="Invalid input. Required keys: open, high, low, close, volume"
-        )
-
-    X_scaled = scaler.transform(X)
-    prob = model.predict(X_scaled)[0][0]
-    signal = "BUY" if prob >= 0.5 else "SELL"
+        X = np.array([[
+            float(candle["open"]),
+            float(candle["high"]),
+            float(candle["low"]),
+            float(candle["close"]),
+            float(candle["volume"])
+        ]])
+        X_scaled = scaler.transform(X)
+        X_scaled = X_scaled[np.newaxis, :, :]  # (1,1,5)
+        prob = model.predict(X_scaled)[0][0]
+        signal = "BUY" if prob >= 0.5 else "SELL"
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Invalid input or prediction error: {e}")
 
     return {"probability": float(prob), "signal": signal}
