@@ -3,5 +3,6 @@ uvicorn
 gunicorn
 numpy
 tensorflow
-scikit-learn    # REQUIRED because scaler.pkl was made with sklearn
+scikit-learn
+joblib
 requests
